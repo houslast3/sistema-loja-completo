@@ -82,15 +82,74 @@ function broadcastToTypes(types, message) {
 // Produtos
 app.post('/api/products', async (req, res) => {
     try {
-        const productId = await productQueries.addProduct(req.body);
+        // Validação básica
+        if (!req.body.name || !req.body.price) {
+            return res.status(400).json({ 
+                success: false,
+                error: 'Nome e preço são obrigatórios' 
+            });
+        }
+
+        // Validação do preço
+        const price = parseFloat(req.body.price);
+        if (isNaN(price) || price < 0) {
+            return res.status(400).json({ 
+                success: false,
+                error: 'Preço inválido' 
+            });
+        }
+
+        // Validação dos itens
         if (req.body.items) {
+            if (!Array.isArray(req.body.items)) {
+                return res.status(400).json({ 
+                    success: false,
+                    error: 'Itens devem ser um array' 
+                });
+            }
+            
             for (const item of req.body.items) {
-                await productQueries.addProductItem(productId, item);
+                if (!item.name) {
+                    return res.status(400).json({ 
+                        success: false,
+                        error: 'Todos os itens devem ter um nome' 
+                    });
+                }
+                if (item.additional_price) {
+                    const additionalPrice = parseFloat(item.additional_price);
+                    if (isNaN(additionalPrice) || additionalPrice < 0) {
+                        return res.status(400).json({ 
+                            success: false,
+                            error: `Preço adicional inválido para o item ${item.name}` 
+                        });
+                    }
+                }
             }
         }
-        res.status(201).json({ id: productId });
+
+        // Normaliza os dados antes de salvar
+        const productData = {
+            name: req.body.name.trim(),
+            price: price,
+            items: req.body.items?.map(item => ({
+                name: item.name.trim(),
+                additional_price: parseFloat(item.additional_price || 0),
+                is_default: !!item.is_default
+            }))
+        };
+
+        const result = await productQueries.addProduct(productData);
+        res.status(201).json({ 
+            success: true,
+            message: 'Produto cadastrado com sucesso',
+            data: result
+        });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('Erro ao cadastrar produto:', error);
+        res.status(500).json({ 
+            success: false,
+            error: 'Erro ao cadastrar o produto. Tente novamente.' 
+        });
     }
 });
 
