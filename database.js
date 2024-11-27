@@ -1,203 +1,200 @@
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
+const { Pool } = require('pg');
+require('dotenv').config();
 
-const db = new sqlite3.Database(path.join(__dirname, 'restaurant.db'));
+// Configuração do pool de conexões PostgreSQL
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+});
 
 // Inicialização das tabelas
-db.serialize(() => {
-    // Tabela de Produtos
-    db.run(`CREATE TABLE IF NOT EXISTS products (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        price REAL NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )`);
+async function initDatabase() {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
 
-    // Tabela de Itens dos Produtos
-    db.run(`CREATE TABLE IF NOT EXISTS product_items (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        product_id INTEGER,
-        name TEXT NOT NULL,
-        additional_price REAL DEFAULT 0,
-        is_default BOOLEAN DEFAULT 1,
-        FOREIGN KEY (product_id) REFERENCES products (id)
-    )`);
+        // Tabela de Produtos
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS products (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                price DECIMAL NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
 
-    // Tabela de Mesas
-    db.run(`CREATE TABLE IF NOT EXISTS tables (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        table_number INTEGER UNIQUE NOT NULL,
-        status TEXT DEFAULT 'available',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )`);
+        // Tabela de Itens dos Produtos
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS product_items (
+                id SERIAL PRIMARY KEY,
+                product_id INTEGER REFERENCES products(id),
+                name TEXT NOT NULL,
+                additional_price DECIMAL DEFAULT 0,
+                is_default BOOLEAN DEFAULT true
+            )
+        `);
 
-    // Tabela de Pedidos
-    db.run(`CREATE TABLE IF NOT EXISTS orders (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        table_id INTEGER,
-        status TEXT DEFAULT 'pending',
-        total_price REAL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (table_id) REFERENCES tables (id)
-    )`);
+        // Tabela de Mesas
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS tables (
+                id SERIAL PRIMARY KEY,
+                table_number INTEGER UNIQUE NOT NULL,
+                status TEXT DEFAULT 'available',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
 
-    // Tabela de Itens dos Pedidos
-    db.run(`CREATE TABLE IF NOT EXISTS order_items (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        order_id INTEGER,
-        product_id INTEGER,
-        quantity INTEGER DEFAULT 1,
-        unit_price REAL,
-        notes TEXT,
-        status TEXT DEFAULT 'pending',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (order_id) REFERENCES orders (id),
-        FOREIGN KEY (product_id) REFERENCES products (id)
-    )`);
+        // Tabela de Pedidos
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS orders (
+                id SERIAL PRIMARY KEY,
+                table_id INTEGER REFERENCES tables(id),
+                status TEXT DEFAULT 'pending',
+                total_price DECIMAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                ready_at TIMESTAMP,
+                completed_at TIMESTAMP
+            )
+        `);
 
-    // Tabela de Modificações dos Itens dos Pedidos
-    db.run(`CREATE TABLE IF NOT EXISTS order_item_modifications (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        order_item_id INTEGER,
-        product_item_id INTEGER,
-        modification_type TEXT,
-        price_change REAL DEFAULT 0,
-        FOREIGN KEY (order_item_id) REFERENCES order_items (id),
-        FOREIGN KEY (product_item_id) REFERENCES product_items (id)
-    )`);
-});
+        // Tabela de Itens dos Pedidos
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS order_items (
+                id SERIAL PRIMARY KEY,
+                order_id INTEGER REFERENCES orders(id),
+                product_id INTEGER REFERENCES products(id),
+                quantity INTEGER DEFAULT 1,
+                unit_price DECIMAL,
+                notes TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        // Tabela de Modificações dos Itens dos Pedidos
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS order_item_modifications (
+                id SERIAL PRIMARY KEY,
+                order_item_id INTEGER REFERENCES order_items(id),
+                product_item_id INTEGER REFERENCES product_items(id),
+                modification_type TEXT,
+                price_change DECIMAL DEFAULT 0
+            )
+        `);
+
+        await client.query('COMMIT');
+    } catch (e) {
+        await client.query('ROLLBACK');
+        throw e;
+    } finally {
+        client.release();
+    }
+}
 
 // Funções de Produtos
 const productQueries = {
     addProduct: async (product) => {
-        return new Promise((resolve, reject) => {
-            db.run(
-                'INSERT INTO products (name, price) VALUES (?, ?)',
-                [product.name, product.price],
-                function(err) {
-                    if (err) reject(err);
-                    resolve(this.lastID);
-                }
-            );
-        });
+        const result = await pool.query(
+            'INSERT INTO products (name, price) VALUES ($1, $2) RETURNING id',
+            [product.name, product.price]
+        );
+        return result.rows[0].id;
     },
 
     addProductItem: async (productId, item) => {
-        return new Promise((resolve, reject) => {
-            db.run(
-                'INSERT INTO product_items (product_id, name, additional_price, is_default) VALUES (?, ?, ?, ?)',
-                [productId, item.name, item.additional_price, item.is_default],
-                function(err) {
-                    if (err) reject(err);
-                    resolve(this.lastID);
-                }
-            );
-        });
+        const result = await pool.query(
+            'INSERT INTO product_items (product_id, name, additional_price, is_default) VALUES ($1, $2, $3, $4) RETURNING id',
+            [productId, item.name, item.additional_price, item.is_default]
+        );
+        return result.rows[0].id;
     },
 
     getProducts: async () => {
-        return new Promise((resolve, reject) => {
-            db.all('SELECT * FROM products', [], (err, rows) => {
-                if (err) reject(err);
-                resolve(rows);
-            });
-        });
+        const result = await pool.query('SELECT * FROM products');
+        return result.rows;
     },
 
     getProductWithItems: async (productId) => {
-        return new Promise((resolve, reject) => {
-            db.get('SELECT * FROM products WHERE id = ?', [productId], (err, product) => {
-                if (err) reject(err);
-                if (!product) resolve(null);
+        const product = await pool.query('SELECT * FROM products WHERE id = $1', [productId]);
+        if (product.rows.length === 0) return null;
 
-                db.all(
-                    'SELECT * FROM product_items WHERE product_id = ?',
-                    [productId],
-                    (err, items) => {
-                        if (err) reject(err);
-                        product.items = items;
-                        resolve(product);
-                    }
-                );
-            });
-        });
+        const items = await pool.query(
+            'SELECT * FROM product_items WHERE product_id = $1',
+            [productId]
+        );
+        
+        return {
+            ...product.rows[0],
+            items: items.rows
+        };
     }
 };
 
 // Funções de Pedidos
 const orderQueries = {
     createOrder: async (tableId) => {
-        return new Promise((resolve, reject) => {
-            db.run(
-                'INSERT INTO orders (table_id, status) VALUES (?, "pending")',
-                [tableId],
-                function(err) {
-                    if (err) reject(err);
-                    resolve(this.lastID);
-                }
-            );
-        });
+        const result = await pool.query(
+            'INSERT INTO orders (table_id, status) VALUES ($1, $2) RETURNING id',
+            [tableId, 'pending']
+        );
+        return result.rows[0].id;
     },
 
     addOrderItem: async (orderItem) => {
-        return new Promise((resolve, reject) => {
-            db.run(
-                'INSERT INTO order_items (order_id, product_id, quantity, unit_price, notes) VALUES (?, ?, ?, ?, ?)',
-                [orderItem.orderId, orderItem.productId, orderItem.quantity, orderItem.unitPrice, orderItem.notes],
-                function(err) {
-                    if (err) reject(err);
-                    resolve(this.lastID);
-                }
-            );
-        });
+        const result = await pool.query(
+            'INSERT INTO order_items (order_id, product_id, quantity, unit_price, notes) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+            [orderItem.orderId, orderItem.productId, orderItem.quantity, orderItem.unitPrice, orderItem.notes]
+        );
+        return result.rows[0].id;
     },
 
     updateOrderStatus: async (orderId, status) => {
-        return new Promise((resolve, reject) => {
-            db.run(
-                'UPDATE orders SET status = ? WHERE id = ?',
-                [status, orderId],
-                function(err) {
-                    if (err) reject(err);
-                    resolve(this.changes);
-                }
-            );
-        });
+        let query = 'UPDATE orders SET status = $1';
+        const params = [status, orderId];
+
+        if (status === 'ready') {
+            query += ', ready_at = CURRENT_TIMESTAMP';
+        } else if (status === 'completed') {
+            query += ', completed_at = CURRENT_TIMESTAMP';
+        }
+
+        query += ' WHERE id = $2';
+
+        const result = await pool.query(query, params);
+        return result.rowCount;
     },
 
     getTableOrders: async (tableId) => {
-        return new Promise((resolve, reject) => {
-            db.all(
-                `SELECT o.*, oi.* FROM orders o 
-                LEFT JOIN order_items oi ON o.id = oi.order_id 
-                WHERE o.table_id = ? ORDER BY o.created_at DESC`,
-                [tableId],
-                (err, rows) => {
-                    if (err) reject(err);
-                    resolve(rows);
-                }
-            );
-        });
+        const result = await pool.query(
+            `SELECT o.*, oi.*, p.name as product_name 
+            FROM orders o 
+            LEFT JOIN order_items oi ON o.id = oi.order_id 
+            LEFT JOIN products p ON oi.product_id = p.id
+            WHERE o.table_id = $1 
+            ORDER BY o.created_at DESC`,
+            [tableId]
+        );
+        return result.rows;
     },
 
     getPendingOrders: async () => {
-        return new Promise((resolve, reject) => {
-            db.all(
-                `SELECT o.*, oi.* FROM orders o 
-                LEFT JOIN order_items oi ON o.id = oi.order_id 
-                WHERE o.status = 'pending' ORDER BY o.created_at`,
-                [],
-                (err, rows) => {
-                    if (err) reject(err);
-                    resolve(rows);
-                }
-            );
-        });
+        const result = await pool.query(
+            `SELECT o.*, oi.*, p.name as product_name 
+            FROM orders o 
+            LEFT JOIN order_items oi ON o.id = oi.order_id 
+            LEFT JOIN products p ON oi.product_id = p.id
+            WHERE o.status = 'pending' 
+            ORDER BY o.created_at`
+        );
+        return result.rows;
     }
 };
 
+// Inicializa o banco de dados
+initDatabase().catch(console.error);
+
 module.exports = {
-    db,
+    pool,
     productQueries,
     orderQueries
 };
