@@ -1,278 +1,191 @@
-const { Pool } = require('pg');
+const mongoose = require('mongoose');
 require('dotenv').config();
 
-// Configuração do pool de conexões PostgreSQL
-const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
-    max: 20, // máximo de conexões no pool
-    idleTimeoutMillis: 30000, // tempo máximo que uma conexão pode ficar ociosa
-    connectionTimeoutMillis: 2000, // tempo máximo para estabelecer uma conexão
-    keepAlive: true // mantém a conexão ativa
-});
+const Product = require('./models/Product');
+const Order = require('./models/Order');
+const Table = require('./models/Table');
 
-// Listener para erros do pool
-pool.on('error', (err, client) => {
-    console.error('Erro inesperado no pool de conexões:', err);
-});
+// Configuração do Mongoose
+mongoose.set('strictQuery', false);
 
-// Listener para conexões adquiridas
-pool.on('connect', (client) => {
-    client.query('SET statement_timeout = 30000'); // timeout de 30 segundos para queries
-});
-
-// Inicialização das tabelas
-async function initDatabase() {
-    const client = await pool.connect();
+// Função para conectar ao MongoDB
+const connectDB = async () => {
     try {
-        await client.query('BEGIN');
-
-        // Tabela de Produtos
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS products (
-                id SERIAL PRIMARY KEY,
-                name TEXT NOT NULL,
-                price DECIMAL NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `);
-
-        // Tabela de Itens dos Produtos
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS product_items (
-                id SERIAL PRIMARY KEY,
-                product_id INTEGER REFERENCES products(id),
-                name TEXT NOT NULL,
-                additional_price DECIMAL DEFAULT 0,
-                is_default BOOLEAN DEFAULT true
-            )
-        `);
-
-        // Tabela de Mesas
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS tables (
-                id SERIAL PRIMARY KEY,
-                table_number INTEGER UNIQUE NOT NULL,
-                status TEXT DEFAULT 'available',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `);
-
-        // Tabela de Pedidos
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS orders (
-                id SERIAL PRIMARY KEY,
-                table_id INTEGER REFERENCES tables(id),
-                status TEXT DEFAULT 'pending',
-                total_price DECIMAL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                ready_at TIMESTAMP,
-                completed_at TIMESTAMP
-            )
-        `);
-
-        // Tabela de Itens dos Pedidos
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS order_items (
-                id SERIAL PRIMARY KEY,
-                order_id INTEGER REFERENCES orders(id),
-                product_id INTEGER REFERENCES products(id),
-                quantity INTEGER DEFAULT 1,
-                unit_price DECIMAL,
-                notes TEXT,
-                status TEXT DEFAULT 'pending',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `);
-
-        // Tabela de Modificações dos Itens dos Pedidos
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS order_item_modifications (
-                id SERIAL PRIMARY KEY,
-                order_item_id INTEGER REFERENCES order_items(id),
-                product_item_id INTEGER REFERENCES product_items(id),
-                modification_type TEXT,
-                price_change DECIMAL DEFAULT 0
-            )
-        `);
-
-        await client.query('COMMIT');
-    } catch (e) {
-        await client.query('ROLLBACK');
-        throw e;
-    } finally {
-        client.release();
+        const conn = await mongoose.connect(process.env.MONGODB_URI, {
+            useNewUrlParser: true,
+            useUnifiedTopology: true,
+        });
+        console.log(`MongoDB Conectado: ${conn.connection.host}`);
+    } catch (error) {
+        console.error('Erro ao conectar ao MongoDB:', error);
+        process.exit(1);
     }
-}
+};
 
-// Funções de Produtos
+// Queries de Produtos
 const productQueries = {
     addProduct: async (product) => {
-        const client = await pool.connect();
         try {
-            await client.query('BEGIN');
-            
-            // Insere o produto
-            const productResult = await client.query(
-                'INSERT INTO products (name, price) VALUES ($1, $2) RETURNING id, name, price, created_at',
-                [product.name, product.price]
-            );
-            const productId = productResult.rows[0].id;
-
-            // Array para armazenar os itens inseridos
-            const insertedItems = [];
-
-            // Se houver itens, insere cada um
-            if (product.items && product.items.length > 0) {
-                for (const item of product.items) {
-                    const itemResult = await client.query(
-                        `INSERT INTO product_items 
-                         (product_id, name, additional_price, is_default) 
-                         VALUES ($1, $2, $3, $4)
-                         RETURNING id, name, additional_price, is_default`,
-                        [productId, item.name, item.additional_price || 0, item.is_default || true]
-                    );
-                    insertedItems.push(itemResult.rows[0]);
-                }
-            }
-
-            await client.query('COMMIT');
-            
-            // Retorna o produto completo com seus itens
-            return {
-                id: productId,
-                ...productResult.rows[0],
-                items: insertedItems
-            };
+            const newProduct = new Product(product);
+            await newProduct.save();
+            return newProduct;
         } catch (error) {
-            await client.query('ROLLBACK');
-            console.error('Erro ao inserir produto:', error);
-            throw new Error('Falha ao cadastrar o produto: ' + error.message);
-        } finally {
-            client.release();
-        }
-    },
-
-    addProductItem: async (productId, item) => {
-        const client = await pool.connect();
-        try {
-            const result = await client.query(
-                `INSERT INTO product_items 
-                 (product_id, name, additional_price, is_default) 
-                 VALUES ($1, $2, $3, $4)
-                 RETURNING id, name, additional_price, is_default`,
-                [productId, item.name, item.additional_price || 0, item.is_default || true]
-            );
-            return result.rows[0];
-        } catch (error) {
-            console.error('Erro ao inserir item do produto:', error);
-            throw new Error('Falha ao cadastrar o item: ' + error.message);
-        } finally {
-            client.release();
+            console.error('Erro ao adicionar produto:', error);
+            throw error;
         }
     },
 
     getProducts: async () => {
-        const client = await pool.connect();
         try {
-            const result = await client.query(`
-                SELECT p.*, 
-                       COALESCE(json_agg(pi.*) FILTER (WHERE pi.id IS NOT NULL), '[]') as items
-                FROM products p
-                LEFT JOIN product_items pi ON p.id = pi.product_id
-                GROUP BY p.id
-                ORDER BY p.created_at DESC
-            `);
-            return result.rows;
+            return await Product.find().sort('-createdAt');
         } catch (error) {
             console.error('Erro ao buscar produtos:', error);
-            throw new Error('Falha ao buscar produtos: ' + error.message);
-        } finally {
-            client.release();
+            throw error;
         }
     },
 
-    getProductWithItems: async (productId) => {
-        const product = await pool.query('SELECT * FROM products WHERE id = $1', [productId]);
-        if (product.rows.length === 0) return null;
-
-        const items = await pool.query(
-            'SELECT * FROM product_items WHERE product_id = $1',
-            [productId]
-        );
-        
-        return {
-            ...product.rows[0],
-            items: items.rows
-        };
+    getProductById: async (id) => {
+        try {
+            return await Product.findById(id);
+        } catch (error) {
+            console.error('Erro ao buscar produto:', error);
+            throw error;
+        }
     }
 };
 
-// Funções de Pedidos
+// Queries de Pedidos
 const orderQueries = {
     createOrder: async (tableId) => {
-        const result = await pool.query(
-            'INSERT INTO orders (table_id, status) VALUES ($1, $2) RETURNING id',
-            [tableId, 'pending']
-        );
-        return result.rows[0].id;
+        try {
+            const order = new Order({
+                table: tableId,
+                items: [],
+                total_price: 0
+            });
+            await order.save();
+            return order._id;
+        } catch (error) {
+            console.error('Erro ao criar pedido:', error);
+            throw error;
+        }
     },
 
-    addOrderItem: async (orderItem) => {
-        const result = await pool.query(
-            'INSERT INTO order_items (order_id, product_id, quantity, unit_price, notes) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-            [orderItem.orderId, orderItem.productId, orderItem.quantity, orderItem.unitPrice, orderItem.notes]
-        );
-        return result.rows[0].id;
+    addOrderItem: async (orderId, item) => {
+        try {
+            const order = await Order.findById(orderId);
+            if (!order) throw new Error('Pedido não encontrado');
+
+            const product = await Product.findById(item.productId);
+            if (!product) throw new Error('Produto não encontrado');
+
+            order.items.push({
+                product: item.productId,
+                quantity: item.quantity,
+                unit_price: product.price,
+                notes: item.notes,
+                modifications: item.modifications || []
+            });
+
+            await order.save();
+            return order.items[order.items.length - 1]._id;
+        } catch (error) {
+            console.error('Erro ao adicionar item ao pedido:', error);
+            throw error;
+        }
     },
 
     updateOrderStatus: async (orderId, status) => {
-        let query = 'UPDATE orders SET status = $1';
-        const params = [status, orderId];
+        try {
+            const order = await Order.findById(orderId);
+            if (!order) throw new Error('Pedido não encontrado');
 
-        if (status === 'ready') {
-            query += ', ready_at = CURRENT_TIMESTAMP';
-        } else if (status === 'completed') {
-            query += ', completed_at = CURRENT_TIMESTAMP';
+            order.status = status;
+            if (status === 'ready') order.ready_at = new Date();
+            if (status === 'completed') order.completed_at = new Date();
+
+            await order.save();
+            return true;
+        } catch (error) {
+            console.error('Erro ao atualizar status do pedido:', error);
+            throw error;
         }
-
-        query += ' WHERE id = $2';
-
-        const result = await pool.query(query, params);
-        return result.rowCount;
     },
 
     getTableOrders: async (tableId) => {
-        const result = await pool.query(
-            `SELECT o.*, oi.*, p.name as product_name 
-            FROM orders o 
-            LEFT JOIN order_items oi ON o.id = oi.order_id 
-            LEFT JOIN products p ON oi.product_id = p.id
-            WHERE o.table_id = $1 
-            ORDER BY o.created_at DESC`,
-            [tableId]
-        );
-        return result.rows;
+        try {
+            return await Order.find({ table: tableId })
+                            .populate('table')
+                            .populate({
+                                path: 'items.product',
+                                select: 'name price'
+                            })
+                            .sort('-createdAt');
+        } catch (error) {
+            console.error('Erro ao buscar pedidos da mesa:', error);
+            throw error;
+        }
     },
 
     getPendingOrders: async () => {
-        const result = await pool.query(
-            `SELECT o.*, oi.*, p.name as product_name 
-            FROM orders o 
-            LEFT JOIN order_items oi ON o.id = oi.order_id 
-            LEFT JOIN products p ON oi.product_id = p.id
-            WHERE o.status = 'pending' 
-            ORDER BY o.created_at`
-        );
-        return result.rows;
+        try {
+            return await Order.find({ status: 'pending' })
+                            .populate('table')
+                            .populate({
+                                path: 'items.product',
+                                select: 'name price'
+                            })
+                            .sort('createdAt');
+        } catch (error) {
+            console.error('Erro ao buscar pedidos pendentes:', error);
+            throw error;
+        }
     }
 };
 
-// Inicializa o banco de dados
-initDatabase().catch(console.error);
+// Queries de Mesas
+const tableQueries = {
+    createTable: async (tableNumber) => {
+        try {
+            const table = new Table({ table_number: tableNumber });
+            await table.save();
+            return table;
+        } catch (error) {
+            console.error('Erro ao criar mesa:', error);
+            throw error;
+        }
+    },
+
+    updateTableStatus: async (tableId, status) => {
+        try {
+            const table = await Table.findByIdAndUpdate(
+                tableId,
+                { status },
+                { new: true }
+            );
+            return table;
+        } catch (error) {
+            console.error('Erro ao atualizar status da mesa:', error);
+            throw error;
+        }
+    },
+
+    getTables: async () => {
+        try {
+            return await Table.find().sort('table_number');
+        } catch (error) {
+            console.error('Erro ao buscar mesas:', error);
+            throw error;
+        }
+    }
+};
+
+// Conecta ao banco de dados
+connectDB();
 
 module.exports = {
-    pool,
+    connectDB,
     productQueries,
-    orderQueries
+    orderQueries,
+    tableQueries
 };
