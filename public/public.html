@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pedidos Prontos</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            padding: 20px;
+            background-color: #f8f9fa;
+        }
+        .orders-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            justify-content: center;
+        }
+        .order-card {
+            background: #fff;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            width: 300px;
+            transition: transform 0.3s ease;
+        }
+        .order-card:hover {
+            transform: translateY(-5px);
+        }
+        .order-number {
+            font-size: 2em;
+            font-weight: bold;
+            color: #198754;
+            text-align: center;
+            margin-bottom: 15px;
+        }
+        .table-number {
+            font-size: 1.5em;
+            text-align: center;
+            color: #6c757d;
+            margin-bottom: 15px;
+        }
+        .ready-time {
+            text-align: center;
+            color: #dc3545;
+            font-weight: bold;
+            margin-bottom: 15px;
+        }
+        @media (min-width: 768px) {
+            .orders-container {
+                justify-content: flex-start;
+            }
+        }
+        .blink {
+            animation: blink-animation 1s steps(5, start) infinite;
+        }
+        @keyframes blink-animation {
+            to {
+                visibility: hidden;
+            }
+        }
+        .new-order {
+            animation: slide-in 0.5s ease-out;
+        }
+        @keyframes slide-in {
+            from {
+                transform: translateX(-100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="text-center mb-5">Pedidos Prontos para Retirada</h1>
+        <div id="ordersContainer" class="orders-container">
+            <!-- Pedidos prontos serão exibidos aqui -->
+        </div>
+    </div>
+
+    <audio id="notificationSound" src="https://actions.google.com/sounds/v1/alarms/beep_short.ogg"></audio>
+
+    <script>
+        let ws;
+        let readyOrders = new Map();
+
+        // Conecta ao WebSocket
+        function connectWebSocket() {
+            ws = new WebSocket(`ws://${window.location.host}?type=public`);
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                
+                if (data.type === 'order_ready') {
+                    loadOrder(data.orderId);
+                } else if (data.type === 'order_delivered') {
+                    removeOrder(data.orderId);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+
+            ws.onclose = () => {
+                setTimeout(connectWebSocket, 1000);
+            };
+        }
+
+        // Carrega pedidos prontos
+        async function loadReadyOrders() {
+            try {
+                const response = await fetch('/api/orders/ready');
+                const orders = await response.json();
+                orders.forEach(order => {
+                    readyOrders.set(order.id, order);
+                });
+                updateDisplay();
+            } catch (error) {
+                console.error('Error loading ready orders:', error);
+            }
+        }
+
+        // Carrega um pedido específico
+        async function loadOrder(orderId) {
+            try {
+                const response = await fetch(`/api/orders/${orderId}`);
+                const order = await response.json();
+                readyOrders.set(order.id, order);
+                playNotification();
+                updateDisplay();
+            } catch (error) {
+                console.error('Error loading order:', error);
+            }
+        }
+
+        // Remove um pedido da lista
+        function removeOrder(orderId) {
+            const orderElement = document.getElementById(`order-${orderId}`);
+            if (orderElement) {
+                orderElement.style.animation = 'slide-out 0.5s ease-in';
+                setTimeout(() => {
+                    readyOrders.delete(orderId);
+                    updateDisplay();
+                }, 500);
+            } else {
+                readyOrders.delete(orderId);
+                updateDisplay();
+            }
+        }
+
+        // Atualiza a exibição dos pedidos
+        function updateDisplay() {
+            const container = document.getElementById('ordersContainer');
+            container.innerHTML = Array.from(readyOrders.values())
+                .sort((a, b) => new Date(a.ready_at) - new Date(b.ready_at))
+                .map(order => `
+                    <div class="order-card new-order" id="order-${order.id}">
+                        <div class="order-number">
+                            #${order.id}
+                        </div>
+                        <div class="table-number">
+                            Mesa ${order.table_id}
+                        </div>
+                        <div class="ready-time" data-ready="${order.ready_at}">
+                            Pronto há ${getElapsedTime(order.ready_at)}
+                        </div>
+                    </div>
+                `).join('');
+        }
+
+        // Calcula o tempo decorrido
+        function getElapsedTime(timestamp) {
+            const ready = new Date(timestamp);
+            const now = new Date();
+            const elapsed = Math.floor((now - ready) / 1000); // segundos
+
+            if (elapsed < 60) {
+                return `${elapsed} segundos`;
+            } else if (elapsed < 3600) {
+                return `${Math.floor(elapsed / 60)} minutos`;
+            } else {
+                return `${Math.floor(elapsed / 3600)}h ${Math.floor((elapsed % 3600) / 60)}min`;
+            }
+        }
+
+        // Atualiza os tempos mostrados
+        function updateTimes() {
+            document.querySelectorAll('.ready-time').forEach(timeElement => {
+                const readyAt = timeElement.dataset.ready;
+                timeElement.textContent = `Pronto há ${getElapsedTime(readyAt)}`;
+            });
+        }
+
+        // Toca som de notificação
+        function playNotification() {
+            const audio = document.getElementById('notificationSound');
+            audio.play().catch(error => console.log('Error playing notification:', error));
+        }
+
+        // Inicialização
+        window.onload = () => {
+            connectWebSocket();
+            loadReadyOrders();
+            setInterval(updateTimes, 1000);
+        };
+    </script>
+</body>
+</html>

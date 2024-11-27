@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interface do Garçom</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            padding: 15px;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+        .product-item {
+            border: 1px solid #ddd;
+            padding: 10px;
+            margin-bottom: 10px;
+            border-radius: 5px;
+        }
+        .item-modifier {
+            margin-left: 20px;
+        }
+        #orderSummary {
+            position: sticky;
+            bottom: 0;
+            background: white;
+            padding: 15px;
+            box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
+        }
+        .quantity-control {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .quantity-control button {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            border: none;
+            background: #007bff;
+            color: white;
+            font-size: 18px;
+            line-height: 1;
+            cursor: pointer;
+        }
+        .quantity-control span {
+            min-width: 30px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2 class="mb-4">Novo Pedido</h2>
+        
+        <div class="mb-3">
+            <label for="tableNumber" class="form-label">Número da Mesa</label>
+            <input type="number" class="form-control" id="tableNumber" required>
+        </div>
+
+        <div id="productList" class="mb-4">
+            <!-- Produtos serão carregados aqui -->
+        </div>
+
+        <div id="orderSummary" class="border-top pt-3">
+            <h4>Resumo do Pedido</h4>
+            <div id="orderItems"></div>
+            <div class="d-flex justify-content-between align-items-center mt-3">
+                <h5>Total: R$ <span id="totalPrice">0.00</span></h5>
+                <button class="btn btn-primary" onclick="submitOrder()">Enviar Pedido</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let products = [];
+        let orderItems = new Map();
+        let ws;
+
+        // Conecta ao WebSocket
+        function connectWebSocket() {
+            ws = new WebSocket(`ws://${window.location.host}?type=waiter`);
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === 'order_ready') {
+                    alert(`Pedido #${data.orderId} está pronto para entrega!`);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+
+            ws.onclose = () => {
+                setTimeout(connectWebSocket, 1000);
+            };
+        }
+
+        // Carrega produtos do servidor
+        async function loadProducts() {
+            try {
+                const response = await fetch('/api/products');
+                products = await response.json();
+                displayProducts();
+            } catch (error) {
+                console.error('Error loading products:', error);
+            }
+        }
+
+        // Exibe produtos na interface
+        function displayProducts() {
+            const productList = document.getElementById('productList');
+            productList.innerHTML = products.map(product => `
+                <div class="product-item">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h5>${product.name} - R$ ${product.price.toFixed(2)}</h5>
+                        <div class="quantity-control">
+                            <button onclick="updateQuantity(${product.id}, -1)">-</button>
+                            <span id="quantity-${product.id}">0</span>
+                            <button onclick="updateQuantity(${product.id}, 1)">+</button>
+                        </div>
+                    </div>
+                    <div class="item-modifiers">
+                        ${product.items ? product.items.map(item => `
+                            <div class="item-modifier">
+                                <input type="checkbox" id="item-${item.id}" 
+                                    data-price="${item.additional_price}"
+                                    ${item.is_default ? 'checked' : ''}>
+                                <label for="item-${item.id}">
+                                    ${item.name} 
+                                    ${item.additional_price > 0 ? `(+R$ ${item.additional_price.toFixed(2)})` : ''}
+                                </label>
+                            </div>
+                        `).join('') : ''}
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // Atualiza quantidade de um produto
+        function updateQuantity(productId, change) {
+            const quantityElement = document.getElementById(`quantity-${productId}`);
+            let quantity = parseInt(quantityElement.textContent) + change;
+            quantity = Math.max(0, quantity);
+            quantityElement.textContent = quantity;
+
+            if (quantity === 0) {
+                orderItems.delete(productId);
+            } else {
+                const product = products.find(p => p.id === productId);
+                const modifiers = Array.from(document.querySelectorAll(`#item-${productId} input:checked`))
+                    .map(input => ({
+                        id: parseInt(input.id.split('-')[1]),
+                        price: parseFloat(input.dataset.price)
+                    }));
+
+                orderItems.set(productId, {
+                    productId,
+                    quantity,
+                    unitPrice: product.price,
+                    modifiers
+                });
+            }
+
+            updateOrderSummary();
+        }
+
+        // Atualiza resumo do pedido
+        function updateOrderSummary() {
+            const orderItemsDiv = document.getElementById('orderItems');
+            let total = 0;
+
+            orderItemsDiv.innerHTML = Array.from(orderItems.values()).map(item => {
+                const product = products.find(p => p.id === item.productId);
+                const itemTotal = item.quantity * item.unitPrice;
+                total += itemTotal;
+
+                return `
+                    <div class="d-flex justify-content-between mb-2">
+                        <span>${item.quantity}x ${product.name}</span>
+                        <span>R$ ${itemTotal.toFixed(2)}</span>
+                    </div>
+                `;
+            }).join('');
+
+            document.getElementById('totalPrice').textContent = total.toFixed(2);
+        }
+
+        // Envia pedido para o servidor
+        async function submitOrder() {
+            const tableNumber = document.getElementById('tableNumber').value;
+            if (!tableNumber) {
+                alert('Por favor, informe o número da mesa');
+                return;
+            }
+
+            if (orderItems.size === 0) {
+                alert('Adicione pelo menos um item ao pedido');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/orders', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        tableId: tableNumber,
+                        items: Array.from(orderItems.values())
+                    })
+                });
+
+                if (response.ok) {
+                    alert('Pedido enviado com sucesso!');
+                    orderItems.clear();
+                    updateOrderSummary();
+                    document.getElementById('tableNumber').value = '';
+                    products.forEach(p => {
+                        document.getElementById(`quantity-${p.id}`).textContent = '0';
+                    });
+                } else {
+                    throw new Error('Erro ao enviar pedido');
+                }
+            } catch (error) {
+                console.error('Error submitting order:', error);
+                alert('Erro ao enviar pedido. Tente novamente.');
+            }
+        }
+
+        // Inicialização
+        window.onload = () => {
+            connectWebSocket();
+            loadProducts();
+        };
+    </script>
+</body>
+</html>
