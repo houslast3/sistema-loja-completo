@@ -1,36 +1,41 @@
 const path = require('path');
 const dotenv = require('dotenv');
 
-// Carrega o arquivo .env
-dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
+// Tenta carregar o .env apenas em desenvolvimento
+if (process.env.NODE_ENV !== 'production') {
+    dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
+}
 
-const config = {
-    mongodb: {
-        uri: process.env.MONGODB_URI,
-        options: {
-            useNewUrlParser: true,
-            useUnifiedTopology: true,
-            retryWrites: true,
-            w: 'majority'
-        }
-    },
-    server: {
-        port: process.env.PORT || 10000,
-        env: process.env.NODE_ENV || 'development'
-    },
-    websocket: {
-        url: process.env.WS_URL || 'ws://localhost:10000'
+// Função para obter variável de ambiente com fallback
+const getEnvVar = (key, defaultValue = undefined) => {
+    const value = process.env[key];
+    if (!value && defaultValue === undefined) {
+        throw new Error(`Variável de ambiente obrigatória não encontrada: ${key}`);
     }
+    return value || defaultValue;
 };
 
-// Validação das configurações obrigatórias
-const requiredConfigs = ['mongodb.uri'];
-
-for (const configPath of requiredConfigs) {
-    const value = configPath.split('.').reduce((obj, key) => obj && obj[key], config);
-    if (!value) {
-        throw new Error(`Configuração obrigatória não encontrada: ${configPath}`);
+const config = {
+    database: {
+        host: getEnvVar('DB_HOST', 'dpg-ct3m5452ng1s739ut1ng-a.oregon-postgres.render.com'),
+        port: getEnvVar('DB_PORT', 5432),
+        database: getEnvVar('DB_NAME', 'dados_r2oh'),
+        user: getEnvVar('DB_USER', 'dados_r2oh_user'),
+        password: getEnvVar('DB_PASSWORD', 'Q9FmAmHrnzMzkn7QvrGmQmlUytF3tzCt'),
+        ssl: {
+            rejectUnauthorized: false // Necessário para conexão com Render
+        },
+        max: 20, // Máximo de conexões no pool
+        idleTimeoutMillis: 30000, // Tempo máximo que uma conexão pode ficar inativa
+        connectionTimeoutMillis: 2000, // Tempo máximo para estabelecer conexão
+    },
+    server: {
+        port: getEnvVar('PORT', 10000),
+        env: getEnvVar('NODE_ENV', 'development')
+    },
+    websocket: {
+        url: getEnvVar('WS_URL', 'ws://localhost:10000')
     }
-}
+};
 
 module.exports = config;
