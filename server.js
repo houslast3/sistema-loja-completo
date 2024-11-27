@@ -1,20 +1,22 @@
-require('dotenv').config();
+const config = require('./config/config');
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const path = require('path');
 const cors = require('cors');
 const bodyParser = require('body-parser');
-const { db, productQueries, orderQueries } = require('./database');
+const { db, productQueries, orderQueries, connectDB } = require('./database');
 
 const app = express();
-const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
-
-// Middleware
 app.use(cors());
 app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Conecta ao MongoDB
+connectDB().catch(console.error);
+
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
 
 // WebSocket clients por tipo
 const clients = {
@@ -385,7 +387,7 @@ app.get('/public', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'public.html'));
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = config.server.port;
 server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });

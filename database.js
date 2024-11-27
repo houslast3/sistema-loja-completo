@@ -1,5 +1,10 @@
 const mongoose = require('mongoose');
-require('dotenv').config();
+const config = require('./config/config');
+const path = require('path');
+const dotenv = require('dotenv');
+
+// Carrega o arquivo .env da raiz do projeto
+dotenv.config({ path: path.resolve(__dirname, '.env') });
 
 const Product = require('./models/Product');
 const Order = require('./models/Order');
@@ -12,18 +17,9 @@ mongoose.set('strictQuery', false);
 const connectDB = async () => {
     try {
         console.log('Tentando conectar ao MongoDB...');
-        console.log('URI:', process.env.MONGODB_URI); // Remova este log em produção
-        
-        if (!process.env.MONGODB_URI) {
-            throw new Error('MONGODB_URI não está definida nas variáveis de ambiente');
-        }
+        console.log('URI:', config.mongodb.uri); // Remova este log em produção
 
-        const conn = await mongoose.connect(process.env.MONGODB_URI, {
-            useNewUrlParser: true,
-            useUnifiedTopology: true,
-            retryWrites: true,
-            w: 'majority'
-        });
+        const conn = await mongoose.connect(config.mongodb.uri, config.mongodb.options);
 
         console.log(`MongoDB Conectado: ${conn.connection.host}`);
         
