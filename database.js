@@ -11,11 +11,26 @@ mongoose.set('strictQuery', false);
 // Função para conectar ao MongoDB
 const connectDB = async () => {
     try {
+        console.log('Tentando conectar ao MongoDB...');
+        console.log('URI:', process.env.MONGODB_URI); // Remova este log em produção
+        
+        if (!process.env.MONGODB_URI) {
+            throw new Error('MONGODB_URI não está definida nas variáveis de ambiente');
+        }
+
         const conn = await mongoose.connect(process.env.MONGODB_URI, {
             useNewUrlParser: true,
             useUnifiedTopology: true,
+            retryWrites: true,
+            w: 'majority'
         });
+
         console.log(`MongoDB Conectado: ${conn.connection.host}`);
+        
+        // Teste a conexão
+        await mongoose.connection.db.admin().ping();
+        console.log('Conexão com MongoDB testada com sucesso!');
+        
     } catch (error) {
         console.error('Erro ao conectar ao MongoDB:', error);
         process.exit(1);
