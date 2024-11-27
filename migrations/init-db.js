@@ -30,7 +30,7 @@ const createTables = async () => {
             -- Tabela de pedidos
             CREATE TABLE IF NOT EXISTS orders (
                 id SERIAL PRIMARY KEY,
-                table_number INTEGER NOT NULL,
+                table_id INTEGER NOT NULL,
                 status VARCHAR(50) DEFAULT 'pending',
                 total_amount DECIMAL(10,2) DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -55,11 +55,11 @@ const createTables = async () => {
             -- Foreign keys para orders
             DO $$ BEGIN
                 IF NOT EXISTS (
-                    SELECT 1 FROM pg_constraint WHERE conname = 'orders_table_number_fkey'
+                    SELECT 1 FROM pg_constraint WHERE conname = 'orders_table_id_fkey'
                 ) THEN
                     ALTER TABLE orders
-                    ADD CONSTRAINT orders_table_number_fkey
-                    FOREIGN KEY (table_number) REFERENCES tables(number);
+                    ADD CONSTRAINT orders_table_id_fkey
+                    FOREIGN KEY (table_id) REFERENCES tables(id);
                 END IF;
             END $$;
 
@@ -120,7 +120,7 @@ const createTables = async () => {
                 EXECUTE FUNCTION update_updated_at_column();
         `);
 
-        // Insere algumas mesas padrão se não existirem
+        // Insere mesas iniciais se não existirem
         await pool.query(`
             INSERT INTO tables (number)
             SELECT generate_series(1, 10)

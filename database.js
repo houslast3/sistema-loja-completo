@@ -128,11 +128,11 @@ const orderQueries = {
             
             // Cria o pedido
             const orderQuery = `
-                INSERT INTO orders (table_number, status, total_amount)
+                INSERT INTO orders (table_id, status, total_amount)
                 VALUES ($1, $2, $3)
                 RETURNING *
             `;
-            const orderValues = [order.table_number, order.status || 'pending', order.total_amount];
+            const orderValues = [order.table_id, order.status || 'pending', order.total_amount];
             const orderResult = await client.query(orderQuery, orderValues);
             const newOrder = orderResult.rows[0];
             
